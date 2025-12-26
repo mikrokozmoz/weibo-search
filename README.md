@@ -98,7 +98,7 @@
 ### 1.下载脚本 | Download script
 
 ```bash
-$ git clone https://github.com/dataabc/weibo-search.git
+$ git clone https://github.com/mikrokozmoz/weibo-search.git
 ```
 
 ### 2.安装Scrapy | Install Scrapy
