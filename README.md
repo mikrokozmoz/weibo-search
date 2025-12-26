@@ -9,15 +9,13 @@
 - 支持通过 `HOT_SORT` 参数控制是否按热度排序（settings.py 和 search.py 增加了相关逻辑）。
 - 支持 `START_DATE` 和 `END_DATE` 可为空或 None，不限制日期时可全量抓取。
 - 优化了翻页和细分逻辑，保证热度排序参数在所有请求中都能正确传递。
-- 默认限制最大抓取数量为 1000 条（`LIMIT_RESULT`）。
 - 其他细节优化和兼容性调整。
 
 <br>
 
 - *Support for controlling hot sort via `HOT_SORT` parameter (logic added in settings.py and search.py).*
 - *Allow `START_DATE` and `END_DATE` to be None or empty, enabling unrestricted date crawling.*
-- *Improved pagination and subdivision logic to ensure hot sort parameters are correctly passed in all requests.*
-- *Default maximum crawl limit set to 1000 (`LIMIT_RESULT`).*
+- *Improved pagination and subdivision logic to ensure hot sort parameters are correctly passed in all requests.*(`LIMIT_RESULT`).*
 - *Other minor optimizations and compatibility adjustments.*
 
 ## 功能 | Features
