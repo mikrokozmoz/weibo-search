@@ -33,11 +33,12 @@ class SearchSpider(scrapy.Spider):
     contain_type = util.convert_contain_type(settings.get('CONTAIN_TYPE'))
     regions = util.get_regions(settings.get('REGION'))
     base_url = 'https://s.weibo.com'
-    start_date = settings.get('START_DATE',
-                              datetime.now().strftime('%Y-%m-%d'))
-    end_date = settings.get('END_DATE', datetime.now().strftime('%Y-%m-%d'))
-    if util.str_to_time(start_date) > util.str_to_time(end_date):
-        sys.exit('settings.py配置错误，START_DATE值应早于或等于END_DATE值，请重新配置settings.py')
+    start_date = settings.get('START_DATE', None)
+    end_date = settings.get('END_DATE', None)
+    # 允许start_date和end_date为None或空字符串
+    if start_date and end_date:
+        if util.str_to_time(start_date) > util.str_to_time(end_date):
+            sys.exit('settings.py配置错误，START_DATE值应早于或等于END_DATE值，请重新配置settings.py')
     further_threshold = settings.get('FURTHER_THRESHOLD', 46)
     limit_result = settings.get('LIMIT_RESULT', 0)
     result_count = 0
@@ -46,6 +47,8 @@ class SearchSpider(scrapy.Spider):
     mysql_error = False
     pymysql_error = False
     sqlite3_error = False
+    # 新增：热度排序选项
+    hot_sort = settings.get('HOT_SORT', False)
 
     def check_limit(self):
         """检查是否达到爬取结果数量限制"""
@@ -55,18 +58,28 @@ class SearchSpider(scrapy.Spider):
         return False
 
     def start_requests(self):
-        start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
-        end_date = datetime.strptime(self.end_date,
-                                     '%Y-%m-%d') + timedelta(days=1)
-        start_str = start_date.strftime('%Y-%m-%d') + '-0'
-        end_str = end_date.strftime('%Y-%m-%d') + '-0'
+        # 允许start_date和end_date为None或空字符串
+        if self.start_date and self.end_date:
+            start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
+            end_date = datetime.strptime(self.end_date, '%Y-%m-%d') + timedelta(days=1)
+            start_str = start_date.strftime('%Y-%m-%d') + '-0'
+            end_str = end_date.strftime('%Y-%m-%d') + '-0'
+        else:
+            start_str = end_str = None
+
         for keyword in self.keyword_list:
-            if not self.settings.get('REGION') or '全部' in self.settings.get(
-                    'REGION'):
+            print(f"[DEBUG] Start crawl for keyword: {keyword}")
+            if not self.settings.get('REGION') or '全部' in self.settings.get('REGION'):
                 base_url = 'https://s.weibo.com/weibo?q=%s' % keyword
                 url = base_url + self.weibo_type
                 url += self.contain_type
-                url += '&timescope=custom:{}:{}'.format(start_str, end_str)
+                # 只有在有日期时才加timescope
+                if start_str and end_str:
+                    url += '&timescope=custom:{}:{}'.format(start_str, end_str)
+                # 热度排序时如果没有日期直接加热度参数
+                if self.hot_sort:
+                    url += '&xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Request URL: {url}")
                 yield scrapy.Request(url=url,
                                      callback=self.parse,
                                      meta={
@@ -80,7 +93,11 @@ class SearchSpider(scrapy.Spider):
                     ).format(keyword, region['code'])
                     url = base_url + self.weibo_type
                     url += self.contain_type
-                    url += '&timescope=custom:{}:{}'.format(start_str, end_str)
+                    if start_str and end_str:
+                        url += '&timescope=custom:{}:{}'.format(start_str, end_str)
+                    if self.hot_sort:
+                        url += '&xsort=hot&Refer=hotmore'
+                    print(f"[DEBUG] Request URL: {url}")
                     # 获取一个省的搜索结果
                     yield scrapy.Request(url=url,
                                          callback=self.parse,
@@ -113,8 +130,7 @@ class SearchSpider(scrapy.Spider):
         base_url = response.meta.get('base_url')
         keyword = response.meta.get('keyword')
         province = response.meta.get('province')
-        is_empty = response.xpath(
-            '//div[@class="card card-no-result s-pt20b40"]')
+        is_empty = response.xpath('//div[@class="card card-no-result s-pt20b40"]')
         page_count = len(response.xpath('//ul[@class="s-scroll"]/li'))
         if is_empty:
             print('当前页面搜索结果为空')
@@ -126,44 +142,50 @@ class SearchSpider(scrapy.Spider):
                 if self.check_limit():
                     return
                 yield weibo
-            next_url = response.xpath(
-                '//a[@class="next"]/@href').extract_first()
+            next_url = response.xpath('//a[@class="next"]/@href').extract_first()
             if next_url:
                 # 检查是否达到爬取结果数量限制
                 if self.check_limit():
                     return
                 next_url = self.base_url + next_url
+                # 保证翻页也带上热度参数
+                if self.hot_sort and 'xsort=hot' not in next_url:
+                    if '?' in next_url:
+                        next_url += '&xsort=hot&Refer=hotmore'
+                    else:
+                        next_url += '?xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Next page URL: {next_url}")
                 yield scrapy.Request(url=next_url,
                                      callback=self.parse_page,
                                      meta={'keyword': keyword})
         else:
-            start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
-            end_date = datetime.strptime(self.end_date, '%Y-%m-%d')
-            while start_date <= end_date:
-                start_str = start_date.strftime('%Y-%m-%d') + '-0'
-                start_date = start_date + timedelta(days=1)
-                end_str = start_date.strftime('%Y-%m-%d') + '-0'
-                url = base_url + self.weibo_type
-                url += self.contain_type
-                url += '&timescope=custom:{}:{}&page=1'.format(
-                    start_str, end_str)
-                # 获取一天的搜索结果
-                yield scrapy.Request(url=url,
-                                     callback=self.parse_by_day,
-                                     meta={
-                                         'base_url': base_url,
-                                         'keyword': keyword,
-                                         'province': province,
-                                         'date': start_str[:-2]
-                                     })
+            # 只有在有日期时才进行按天细分
+            if self.start_date and self.end_date:
+                start_date = datetime.strptime(self.start_date, '%Y-%m-%d')
+                end_date = datetime.strptime(self.end_date, '%Y-%m-%d')
+                while start_date <= end_date:
+                    start_str = start_date.strftime('%Y-%m-%d') + '-0'
+                    start_date = start_date + timedelta(days=1)
+                    end_str = start_date.strftime('%Y-%m-%d') + '-0'
+                    url = base_url + self.weibo_type
+                    url += self.contain_type
+                    url += '&timescope=custom:{}:{}&page=1'.format(start_str, end_str)
+                    # 获取一天的搜索结果
+                    yield scrapy.Request(url=url,
+                                         callback=self.parse_by_day,
+                                         meta={
+                                             'base_url': base_url,
+                                             'keyword': keyword,
+                                             'province': province,
+                                             'date': start_str[:-2]
+                                         })
 
     def parse_by_day(self, response):
         """以天为单位筛选"""
         base_url = response.meta.get('base_url')
         keyword = response.meta.get('keyword')
         province = response.meta.get('province')
-        is_empty = response.xpath(
-            '//div[@class="card card-no-result s-pt20b40"]')
+        is_empty = response.xpath('//div[@class="card card-no-result s-pt20b40"]')
         date = response.meta.get('date')
         page_count = len(response.xpath('//ul[@class="s-scroll"]/li'))
         if is_empty:
@@ -176,13 +198,18 @@ class SearchSpider(scrapy.Spider):
                 if self.check_limit():
                     return
                 yield weibo
-            next_url = response.xpath(
-                '//a[@class="next"]/@href').extract_first()
+            next_url = response.xpath('//a[@class="next"]/@href').extract_first()
             if next_url:
                 # 检查是否达到爬取结果数量限制
                 if self.check_limit():
                     return
                 next_url = self.base_url + next_url
+                if self.hot_sort and 'xsort=hot' not in next_url:
+                    if '?' in next_url:
+                        next_url += '&xsort=hot&Refer=hotmore'
+                    else:
+                        next_url += '?xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Next page URL: {next_url}")
                 yield scrapy.Request(url=next_url,
                                      callback=self.parse_page,
                                      meta={'keyword': keyword})
@@ -214,8 +241,7 @@ class SearchSpider(scrapy.Spider):
     def parse_by_hour(self, response):
         """以小时为单位筛选"""
         keyword = response.meta.get('keyword')
-        is_empty = response.xpath(
-            '//div[@class="card card-no-result s-pt20b40"]')
+        is_empty = response.xpath('//div[@class="card card-no-result s-pt20b40"]')
         start_time = response.meta.get('start_time')
         end_time = response.meta.get('end_time')
         page_count = len(response.xpath('//ul[@class="s-scroll"]/li'))
@@ -226,10 +252,15 @@ class SearchSpider(scrapy.Spider):
             for weibo in self.parse_weibo(response):
                 self.check_environment()
                 yield weibo
-            next_url = response.xpath(
-                '//a[@class="next"]/@href').extract_first()
+            next_url = response.xpath('//a[@class="next"]/@href').extract_first()
             if next_url:
                 next_url = self.base_url + next_url
+                if self.hot_sort and 'xsort=hot' not in next_url:
+                    if '?' in next_url:
+                        next_url += '&xsort=hot&Refer=hotmore'
+                    else:
+                        next_url += '?xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Next page URL: {next_url}")
                 yield scrapy.Request(url=next_url,
                                      callback=self.parse_page,
                                      meta={'keyword': keyword})
@@ -254,8 +285,7 @@ class SearchSpider(scrapy.Spider):
     def parse_by_hour_province(self, response):
         """以小时和直辖市/省为单位筛选"""
         keyword = response.meta.get('keyword')
-        is_empty = response.xpath(
-            '//div[@class="card card-no-result s-pt20b40"]')
+        is_empty = response.xpath('//div[@class="card card-no-result s-pt20b40"]')
         start_time = response.meta.get('start_time')
         end_time = response.meta.get('end_time')
         province = response.meta.get('province')
@@ -267,10 +297,15 @@ class SearchSpider(scrapy.Spider):
             for weibo in self.parse_weibo(response):
                 self.check_environment()
                 yield weibo
-            next_url = response.xpath(
-                '//a[@class="next"]/@href').extract_first()
+            next_url = response.xpath('//a[@class="next"]/@href').extract_first()
             if next_url:
                 next_url = self.base_url + next_url
+                if self.hot_sort and 'xsort=hot' not in next_url:
+                    if '?' in next_url:
+                        next_url += '&xsort=hot&Refer=hotmore'
+                    else:
+                        next_url += '?xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Next page URL: {next_url}")
                 yield scrapy.Request(url=next_url,
                                      callback=self.parse_page,
                                      meta={'keyword': keyword})
@@ -296,8 +331,7 @@ class SearchSpider(scrapy.Spider):
     def parse_page(self, response):
         """解析一页搜索结果的信息"""
         keyword = response.meta.get('keyword')
-        is_empty = response.xpath(
-            '//div[@class="card card-no-result s-pt20b40"]')
+        is_empty = response.xpath('//div[@class="card card-no-result s-pt20b40"]')
         if is_empty:
             print('当前页面搜索结果为空')
         else:
@@ -307,13 +341,18 @@ class SearchSpider(scrapy.Spider):
                 if self.check_limit():
                     return
                 yield weibo
-            next_url = response.xpath(
-                '//a[@class="next"]/@href').extract_first()
+            next_url = response.xpath('//a[@class="next"]/@href').extract_first()
             if next_url:
                 # 检查是否达到爬取结果数量限制
                 if self.check_limit():
                     return
                 next_url = self.base_url + next_url
+                if self.hot_sort and 'xsort=hot' not in next_url:
+                    if '?' in next_url:
+                        next_url += '&xsort=hot&Refer=hotmore'
+                    else:
+                        next_url += '?xsort=hot&Refer=hotmore'
+                print(f"[DEBUG] Next page URL: {next_url}")
                 yield scrapy.Request(url=next_url,
                                      callback=self.parse_page,
                                      meta={'keyword': keyword})
